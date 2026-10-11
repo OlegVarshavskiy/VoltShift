@@ -41,6 +41,8 @@ void capabilities_collect(int cpu_ok, const GPUList *g, const BatteryInfo *b,
                          "PowerReadFriendlyName result"};
     out[10] = (Capability){"Battery wear / cycle count", CAP_NOT_IMPLEMENTED,
                           "Not exposed by this diagnostic implementation"};
-    out[11] = (Capability){"Power / GPU / fan control", CAP_NOT_IMPLEMENTED,
-                          "Read-only application; no control backend"};
+    out[11] = (Capability){"Windows power profiles", CAP_UNKNOWN,
+                          "Preview: battery --dry-run; writes verified during apply"};
+    out[12] = (Capability){"GPU / fan control", CAP_NOT_IMPLEMENTED,
+                          "No vendor control backend"};
 }

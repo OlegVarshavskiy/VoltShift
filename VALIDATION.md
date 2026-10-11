@@ -1,13 +1,21 @@
-# Проверка VoltShift v0.3 — 11 октября 2026
+# v0.4 validation — 11 October 2026
 
-- Основа: предоставленный проект EnergySaver, коммит `0ba52a1`, программа v0.2. README исходной версии ещё описывал v0.1; он обновлён.
-- Сборка: MSYS2 UCRT64 GCC 16.2.0, C11, `-Wall -Wextra -Wpedantic -Werror -O2`. Успешно, без предупреждений.
-- Автотесты: 65 536 сочетаний флагов батареи и процентов, неизвестные значения, отсутствие батареи, 0% и 0 секунд, питание AC/DC, недоступные данные, ошибки и частичные результаты реестра возможностей, пустой список GPU, NULL-аргументы. Все проверки пройдены.
-- Запуск собранного приложения: успешен, код возврата 0. CPU AMD Ryzen 5 4600H, 12 логических процессоров; AMD Radeon(TM) Graphics и NVIDIA GeForce GTX 1650; батарея 100%, AC, зарядка не идёт; схема Balanced.
-- GPU и идентификаторы независимо сопоставлены с `pnputil /enum-devices /class Display /connected`: совпадают.
-- GUID схемы независимо сопоставлен с `powercfg /getactivescheme`: `381b4222-f694-41f0-9685-ff5bb260df2e`, Balanced.
-- Во время проверки питание оставалось AC. Реальный запуск без батареи, на DC и с отказами Windows API не проводился: такие состояния проверены на уровне интерпретации и реестра, а не подменой системных API.
-- Попытка дополнительной сверки через CIM была отклонена окружением; успешная проверка GPU использует PnP Utility. Батарея не сверялась через независимый источник.
-- Проверено отсутствие вызовов изменения питания, устройств, реестра и управления вентиляторами. Приложение не запускает внешние команды.
-- Износ, ёмкость в mWh и циклы не определяются. Они явно отмечены как не реализованные, а не вычисляются из процента заряда.
-- Тесты не моделируют ошибки выделения памяти/SetupAPI/PowrProf и смену схемы во время чтения. На иных устройствах нужны дополнительные запуски. MSVC не проверялся.
+Source: current local EnergySaver/VoltShift v0.3 (4ac1b80). Changes are in a separate workspace copy. Your original checkout has not been edited, committed or pushed by this task.
+
+Passed:
+- Native MSYS2 UCRT64 GCC 16.2.0 compilation with C11, -Wall -Wextra -Wpedantic -Werror -O2.
+- All existing 65,536 battery flag/percentage combinations and diagnostic boundary tests.
+- Controller tests: save before any power write, repeated apply without clone proliferation, performance/original switching, preparation failure rollback, failed activation/readback, failed journal save, failed restoration/deletion/clear and retry, corrupt state refusal, interrupted preparation recovery, automatic AC/DC/unknown transitions.
+- Native storage tests: atomic journal round-trip, temporary-file removal, exclusive lock contention/release, truncation and same-length corruption rejection before control operations.
+- CLI status, help and battery --dry-run. Invalid commands/options return 2. Default status returns 0 on this laptop.
+- Read-only preview on your laptop: CPU minimum original AC=80 DC=5; maximum AC=100 DC=100; boost AC=2 DC=2; display timeout AC=0 DC=180. All proposed settings were readable.
+
+Live test limitation:
+- The opt-in live test was attempted in this agent execution environment. PowerDuplicateScheme returned Windows error 5 (access denied), so clone creation/application could not be verified here.
+- Cleanup returned 0. The original Balanced scheme remained active; test recovery storage was cleared.
+- Full live apply/restore, physical charger transitions, and Ctrl+C handling in your UCRT64 terminal still need the supplied live-test/manual check.
+- The MSYS2 Bash runtime itself cannot start in this restricted agent environment; build.sh is supplied for your terminal. Its equivalent compiler commands and test executables were run natively here without PowerShell.
+
+Not claimed:
+- Measured battery-life improvement, vendor GPU/fan control, hardware enforcement of every policy, MSVC/Linux support, or behavior under corporate policies/Modern Standby on other computers.
+- Tests simulate controller failures through the backend; they do not simulate an actual power loss during disk writes.

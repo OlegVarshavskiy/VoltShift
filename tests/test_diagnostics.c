@@ -60,7 +60,7 @@ int main(void) {
     assert(caps[2].state == CAP_UNKNOWN && caps[3].state == CAP_UNKNOWN);
     assert(caps[4].state == CAP_UNKNOWN && caps[5].state == CAP_UNKNOWN);
     assert(caps[7].state == CAP_UNKNOWN && caps[8].state == CAP_ERROR);
-    assert(caps[10].state == CAP_NOT_IMPLEMENTED && caps[11].state == CAP_NOT_IMPLEMENTED);
+    assert(caps[10].state == CAP_NOT_IMPLEMENTED && caps[11].state == CAP_UNKNOWN && caps[12].state == CAP_NOT_IMPLEMENTED);
     raw.BatteryFlag = 128;
     battery_decode(&raw, &battery);
     capabilities_collect(1, &gpu, &battery, &plan, caps);

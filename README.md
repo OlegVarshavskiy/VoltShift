@@ -1,66 +1,95 @@
-# VoltShift v0.3
+# VoltShift v0.4
 
-A modular, read-only Windows 10/11 diagnostics CLI written in C11.
-Based on the supplied EnergySaver v0.2 sources (Git baseline `0ba52a1`).
+Windows power-profile CLI in C11. Built on the supplied v0.3 source at commit `4ac1b80`.
 
-## Features
+## Quick start — MSYS2 UCRT64 Bash
 
-- Existing CPU name and logical processor count (current processor group).
-- Present display-class adapters, UTF-8 names and PnP instance IDs through SetupAPI. Includes adapters without attached monitors; may include virtual adapters. Presence does not establish rendering activity, integrated/discrete type, or control support.
-- Battery presence, AC source, charge percentage, charging/low/critical flags, battery saver, and estimated remaining seconds when Windows supplies them on battery power.
-- Active power scheme GUID and friendly name through PowrProf.
-- An in-memory capability registry built from these actual query results, with a reason for every state: `supported`, `unavailable`, `unknown`, `error`, `not implemented`. This is not a Windows Registry modification.
+Copy the contents of this EnergySaver folder into your existing project, merging folders and replacing matching source files. Keep your existing .git directory. This package contains no Git history and does not require PowerShell.
 
-No battery wear, design/full capacity, cycle count, GPU telemetry, vendor control, charge limit or fan control backend is implemented. These are not claimed as supported. Battery diagnostics describe the aggregate system battery status, not individual batteries. Unknown values (255 / DWORD -1) are never treated as real measurements. AC does not imply charging.
+From the project root:
 
-## Build and run (PowerShell, MinGW-w64 GCC)
-
-From this project's root:
-
-```powershell
-.\build.ps1 -Test
-.\build\voltshift.exe
+```bash
+bash build.sh
+./build/voltshift.exe battery --dry-run
 ```
 
-The build script finds GCC on PATH or at `C:\msys64\ucrt64\bin\gcc.exe`. You can select another MinGW-w64 installation:
+The build script compiles the application and runs diagnostic, controller and recovery-storage tests. GCC must be the MinGW-w64/UCRT64 Windows compiler. Set CC to another compiler path if necessary.
 
-```powershell
-.\build.ps1 -Compiler 'C:\path\to\gcc.exe' -Test
+For a live check that temporarily activates the battery plan and restores the original:
+
+```bash
+bash build.sh live-test
 ```
 
-Git Bash alone does not supply a compiler. The compiler must target Windows and provide the Windows SDK-compatible headers and import libraries. Run PowerShell scripts according to your local execution policy.
+This is an explicit opt-in system-writing test. It attempts restoration even after a failed operation. Only the standard tests run when no argument is supplied. `bash build.sh build` builds only the application. Your old root-level voltshift.exe remains v0.3; use the executable in build.
 
-Equivalent command in a MinGW-w64 shell (create `build` first):
+## Commands
 
-```sh
-gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude src/main.c src/hardware.c src/gpu.c src/battery.c src/power_plan.c src/capabilities.c -o build/voltshift.exe -ladvapi32 -lsetupapi -lpowrprof
-./build/voltshift.exe
-```
+| Command | Behavior |
+| --- | --- |
+| `./build/voltshift.exe` or `status` | Read-only CPU/GPU/battery/plan report and recovery-session state |
+| `./build/voltshift.exe battery --dry-run` | Read-only policy preview; no clone, journal, directory or settings created |
+| `./build/voltshift.exe battery` | Create/reuse and activate a private battery plan |
+| `./build/voltshift.exe performance` | Select the original plan; retain recovery session for subsequent switching |
+| `./build/voltshift.exe auto` | Foreground switching every five seconds: battery -> battery plan, AC -> original plan |
+| `./build/voltshift.exe restore` | Reactivate original plan, delete the private clone and clear the saved session |
+| `./build/voltshift.exe help` | Command reference |
 
-Exit status is 0 if the CPU, GPU enumeration, system battery status and scheme GUID queries succeed; otherwise 1, with available diagnostics still printed. Missing optional GPU labels/IDs and scheme name do not discard the other data. A successful empty adapter list is distinct from enumeration failure. Absence of a battery is not an API failure. GPU names/IDs and scheme names are emitted as UTF-8; use a UTF-8 terminal for localized text. CPU naming retains v0.2's ANSI registry query.
+Manual battery mode persists after the command exits, including after reconnecting AC. Use auto for automatic switching. Keep the auto terminal open. Ctrl+C/Ctrl+Break requests restoration and exit; wait for the restoration message. Closing or forcibly killing the terminal/process may bypass cleanup: run restore afterward. One control process per user is allowed; stop auto before running another control command. Status and preview remain available during auto.
+
+Auto does not repeatedly enforce a plan if another application changes it while the power source stays the same. It acts on the next detected source transition. Unknown power source readings cause no profile change. No startup task or background service is installed.
+
+## Battery policy
+
+The current plan is duplicated into a uniquely identified **VoltShift Battery** plan. The original is never edited by VoltShift. Both AC and DC values in the private clone are configured:
+
+| Setting | Requested value | Requirement |
+| --- | --- | --- |
+| CPU minimum performance state | 5% | Required |
+| CPU maximum performance state | 70% | Required |
+| Processor boost mode | 0 (disabled) | Optional if not readable |
+| Display idle timeout | 120 seconds | Optional if not readable |
+
+The two CPU settings must be readable and writable. Missing optional settings are reported and skipped. Every attempted write is read back; a write/readback error aborts preparation and removes the incomplete clone when cleanup succeeds. Only a fully prepared profile is activated. Successful activation is checked against the active GUID.
+
+Performance means your original configuration, not a forced High Performance scheme or overclocking. This preserves your normal setup and avoids guessing vendor controls.
+
+These are Windows policy requests. Firmware/drivers and Windows power-mode overlays may affect enforcement. A 70% setting is not a guarantee of 70% frequency or any battery-life percentage. Actual benefit depends on workload and must be measured. VoltShift does not toggle Windows Energy/Battery Saver or replace its background-app policies. It does not disable a GPU, change fan profiles, screen brightness, sleep/hibernation or critical-battery actions.
+
+## Recovery
+
+Before cloning or changing the active plan, VoltShift atomically saves the original/private GUIDs and preparation stage to:
+
+`%LOCALAPPDATA%\VoltShift\session-v1.bin`
+
+The first original plan is retained across repeated battery/performance commands. It is not overwritten by later invocations. The directory is per Windows user, so changing executable/project directories does not lose recovery state. Keep the recovery file while a session exists.
+
+Restore is retryable. If activation or clone deletion fails, the journal is retained. Incomplete sessions require restore before another apply. Truncated/corrupt journals cause control commands to stop without changing settings. Status prints the saved GUIDs when the journal is valid. If another tool deletes the original plan, automatic restoration cannot recreate that external deletion.
+
+Windows error 5 means access was denied by permissions, policy, or the execution environment. Do not assume activation occurred: check status and restore any retained session. The application does not request elevation automatically.
 
 ## Architecture
 
-- `hardware`: existing CPU discovery.
-- `gpu`: present device enumeration and owned dynamic list; `gpu_free` releases it.
-- `battery`: Windows snapshot and separately testable interpretation of sentinel values.
-- `power_plan`: scheme GUID, optional name, and API-specific errors.
-- `capabilities`: interpretation of collected results; no extra system probes or writes.
-- `main`: diagnostic report and exit status.
+- hardware, gpu, battery, power_plan: v0.3 read-only probes.
+- capabilities: diagnostic results, with vendor GPU/fan control still explicitly unimplemented. Power-profile write support is checked during apply, never inferred from a CPU/GPU name.
+- controller: profile transactions, automatic transition decisions and rollback through an injectable backend.
+- control_win: PowrProf operations, policy probing/readback, durable versioned recovery journal, exclusive lock and console auto loop.
+- main: argument validation and presentation. No arguments defaults to read-only status.
 
-All read functions are one-shot snapshots. Settings and devices may change between probes. Do not use results as permanent hardware guarantees. `supported` means a diagnostic succeeded now, not permission to change a setting. Returned Win32 error codes are printed for failed main queries.
+Exit codes: 0 success; 1 operation/query failure; 2 invalid command/options. No third-party driver or runtime library is installed.
 
-## Safety
+## Tests and limits
 
-Only queries are performed. The existing CPU registry handle requests `KEY_READ`. SetupAPI enumerates present display devices; PowrProf reads the active scheme. There are no setters, device enable/disable calls, external commands, driver changes, network requests or elevation requests in the application. Building writes only local project build artifacts.
+See VALIDATION.md. Standard tests perform no Windows power-setting writes. The live test deliberately changes the active plan temporarily and uses a separate recovery directory under build. If its restoration fails, it prints the original GUID and a manual powercfg restoration command; keep its printed recovery directory until recovery is complete.
 
-## Verification
+For functional acceptance, run live-test successfully, then run auto, unplug/reconnect the charger and use status from a second terminal to verify the active profiles. Stop auto with Ctrl+C and verify restoration.
 
-See `VALIDATION.md` for the performed build, runtime comparisons and test limits. See `COMMIT_GUIDE_RU.md` for transfer and commit instructions. Build output is ignored by Git.
+For later comparison with Windows Energy Saver, first restore and use a consistent workload, brightness, starting charge and network conditions. Compare measured discharge across repeated runs rather than Windows' initial remaining-time estimate.
 
-## API references
+## Microsoft API references
 
-- [SetupDiGetClassDevsW](https://learn.microsoft.com/en-us/windows/win32/api/setupapi/nf-setupapi-setupdigetclassdevsw)
-- [SYSTEM_POWER_STATUS](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-system_power_status)
-- [PowerGetActiveScheme](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powergetactivescheme)
-- [PowerReadFriendlyName](https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerreadfriendlyname)
+- [PowerDuplicateScheme](https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerduplicatescheme)
+- [PowerWriteDCValueIndex](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerwritedcvalueindex)
+- [PowerSetActiveScheme](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powersetactivescheme)
+- [Maximum processor state](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-maxperformance)
+- [Processor boost mode](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfboostmode)
