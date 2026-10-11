@@ -1,0 +1,17 @@
+# Compiled binaries
+*.exe
+*.dll
+*.o
+*.obj
+
+# Build directories
+build/
+bin/
+obj/
+
+# Temporary files
+*.tmp
+*.log
+
+# Editor-specific files
+.vs/
