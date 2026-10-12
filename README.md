@@ -1,95 +1,80 @@
-# VoltShift v0.4
+# VoltShift v0.5
 
-Windows power-profile CLI in C11. Built on the supplied v0.3 source at commit `4ac1b80`.
+Windows C11 command-line utility for battery-first coding, Bash, browser/cloud AI and music. Use **voltshift save** to apply the profile, **voltshift restore** to return to your saved original plan. GCC/MSYS2 UCRT64 and Bash are sufficient; PowerShell is not needed.
 
-## Quick start — MSYS2 UCRT64 Bash
+## Install or upgrade
 
-Copy the contents of this EnergySaver folder into your existing project, merging folders and replacing matching source files. Keep your existing .git directory. This package contains no Git history and does not require PowerShell.
-
-From the project root:
-
-```bash
-bash build.sh
-./build/voltshift.exe battery --dry-run
-```
-
-The build script compiles the application and runs diagnostic, controller and recovery-storage tests. GCC must be the MinGW-w64/UCRT64 Windows compiler. Set CC to another compiler path if necessary.
-
-For a live check that temporarily activates the battery plan and restores the original:
-
-```bash
-bash build.sh live-test
-```
-
-This is an explicit opt-in system-writing test. It attempts restoration even after a failed operation. Only the standard tests run when no argument is supplied. `bash build.sh build` builds only the application. Your old root-level voltshift.exe remains v0.3; use the executable in build.
+See [QUICK_START.md](QUICK_START.md). This package extends your supplied v0.4 sources. It contains no .git directory or prebuilt executable. Merge it into the existing project, preserving your Git history. Always run build/voltshift.exe; an old executable at the project root is not updated.
 
 ## Commands
 
 | Command | Behavior |
 | --- | --- |
-| `./build/voltshift.exe` or `status` | Read-only CPU/GPU/battery/plan report and recovery-session state |
-| `./build/voltshift.exe battery --dry-run` | Read-only policy preview; no clone, journal, directory or settings created |
-| `./build/voltshift.exe battery` | Create/reuse and activate a private battery plan |
-| `./build/voltshift.exe performance` | Select the original plan; retain recovery session for subsequent switching |
-| `./build/voltshift.exe auto` | Foreground switching every five seconds: battery -> battery plan, AC -> original plan |
-| `./build/voltshift.exe restore` | Reactivate original plan, delete the private clone and clear the saved session |
-| `./build/voltshift.exe help` | Command reference |
+| voltshift or voltshift status | Read-only diagnostics, current plan policies, actual Saver status and panel refresh |
+| voltshift save --dry-run | Read-only preview of the original baseline; display driver mode test only |
+| voltshift save | Prepare/reuse a private plan, activate it and apply supported internal-panel refresh savings |
+| voltshift battery | Alias of save, retained from v0.4 |
+| voltshift performance | Select your saved original plan and restore the recorded panel refresh; retain session for switching |
+| voltshift restore | Select original plan, restore recorded refresh, remove private plan and recovery session |
+| voltshift auto | Foreground switching every five seconds: battery selects save; AC selects original |
+| voltshift help | Usage |
 
-Manual battery mode persists after the command exits, including after reconnecting AC. Use auto for automatic switching. Keep the auto terminal open. Ctrl+C/Ctrl+Break requests restoration and exit; wait for the restoration message. Closing or forcibly killing the terminal/process may bypass cleanup: run restore afterward. One control process per user is allowed; stop auto before running another control command. Status and preview remain available during auto.
+Without a shell function/PATH entry, substitute ./build/voltshift.exe for voltshift.
 
-Auto does not repeatedly enforce a plan if another application changes it while the power source stays the same. It acts on the next detected source transition. Unknown power source readings cause no profile change. No startup task or background service is installed.
+Manual save persists after the command exits, including on AC. For automatic AC/battery switching, use auto and keep its terminal open. Ctrl+C requests restoration; wait for the completion message. A forced process/terminal close can bypass cleanup: run restore afterward. Stop auto before another modifying command or rebuild. Status and preview remain available. Auto acts on detected power-source transitions, leaving unknown readings alone; it does not continually override changes by other applications. No service or startup task is installed.
 
-## Battery policy
+## Requested policies
 
-The current plan is duplicated into a uniquely identified **VoltShift Battery** plan. The original is never edited by VoltShift. Both AC and DC values in the private clone are configured:
+The original power plan is duplicated into a uniquely identified VoltShift Battery plan. The original plan's settings are never edited.
 
-| Setting | Requested value | Requirement |
+| Policy | Target in private plan | Scope |
 | --- | --- | --- |
-| CPU minimum performance state | 5% | Required |
-| CPU maximum performance state | 70% | Required |
-| Processor boost mode | 0 (disabled) | Optional if not readable |
-| Display idle timeout | 120 seconds | Optional if not readable |
+| CPU minimum state | At most 5% | AC and battery; required |
+| CPU maximum state | At most 60% | AC and battery; required |
+| CPU boost | Disabled (0) | AC and battery |
+| CPU energy preference (EPP) | At least 80/100 toward efficiency | AC and battery |
+| Normal brightness policy | At most 50% | AC and battery |
+| Dim brightness policy | At most 30% | AC and battery |
+| Screen-off idle timeout | 120 seconds | AC and battery |
+| Windows Energy Saver threshold | 100% | Battery only |
+| Saver brightness scale | At most 80% | Battery only |
+| PCIe link power savings | Maximum (2) | Battery only |
+| USB selective suspend | Enabled (1) | Battery only |
 
-The two CPU settings must be readable and writable. Missing optional settings are reported and skipped. Every attempted write is read back; a write/readback error aborts preparation and removes the incomplete clone when cleanup succeeds. Only a fully prepared profile is activated. Successful activation is checked against the active GUID.
+Lower existing CPU limits and brightness policy values are retained; an already stronger EPP is retained. Battery-only settings inherit the original AC values. Missing optional settings are printed and skipped. Required CPU settings must be available. Every attempted write is read back; any write/readback failure aborts and attempts rollback. Activation is also checked against the active GUID.
 
-Performance means your original configuration, not a forced High Performance scheme or overclocking. This preserves your normal setup and avoids guessing vendor controls.
+These are Windows policy values, not guaranteed physical limits or measured watts. A CPU maximum of 60% is not a promise of 60% frequency, load or heat. EPP depends on processor/firmware support. Brightness values are power-plan policies, not a reading or backup of the live brightness slider; Windows/drivers may apply them differently. Saver brightness scaling depends on actual Saver activation. VoltShift prints the actual Windows Battery/Energy Saver flag: check status rather than assuming a threshold write means On. Feature availability and behavior depend on Windows version, drivers, firmware and power-mode overlays.
 
-These are Windows policy requests. Firmware/drivers and Windows power-mode overlays may affect enforcement. A 70% setting is not a guarantee of 70% frequency or any battery-life percentage. Actual benefit depends on workload and must be measured. VoltShift does not toggle Windows Energy/Battery Saver or replace its background-app policies. It does not disable a GPU, change fan profiles, screen brightness, sleep/hibernation or critical-battery actions.
+On a supported internal panel running above 60 Hz, VoltShift selects an enumerated 59/60 Hz mode at the same resolution, color depth, orientation and scan flags, after Windows approves CDS_TEST. The 59/60 Hz family is accepted on readback; restoration of the original higher rate is checked exactly. The original refresh is journaled before any change. External and mirrored displays are left alone. No custom timing or persistent display registry mode is installed. If Windows rejects the mode, refresh stays unchanged and the reason is printed. Selecting a lower panel refresh is not an application/game FPS limiter. If display identity, topology or mode changes externally, restoration preserves that newer selection instead of forcing an old mode onto it.
 
-## Recovery
+Cooling, firmware thermal protection, voltage, CPU cores, GPUs, network adapters and critical-battery/sleep actions remain under their existing management. VoltShift does not disable the NVIDIA GPU or guarantee it sleeps; a browser, external display or another application may keep it awake. Chrome/Spotify application preferences are not edited, and processes are not killed. The requested savings therefore cannot guarantee the absolute lowest possible consumption or a fixed runtime improvement. Compile-heavy work may take longer; compare battery drain and task completion under your real workload.
 
-Before cloning or changing the active plan, VoltShift atomically saves the original/private GUIDs and preparation stage to:
+## Recovery and v0.4 compatibility
 
-`%LOCALAPPDATA%\VoltShift\session-v1.bin`
+A durable, checksummed journal lives at %LOCALAPPDATA%/VoltShift/session-v1.bin. It records the original/private plan IDs, preparation stage, policy revision and display snapshot. The first baseline is retained across repeated commands. The journal is written atomically before cloning or changing display settings, and an exclusive lock prevents concurrent modifying instances for the same Windows user.
 
-The first original plan is retained across repeated battery/performance commands. It is not overwritten by later invocations. The directory is per Windows user, so changing executable/project directories does not lose recovery state. Keep the recovery file while a session exists.
+v0.5 can read and restore v0.4 journals. Applying save to a completed v0.4 session first restores its original plan and replaces the old clone with the expanded profile. An incomplete or corrupt session stops further application until recovery; corrupt files are not overwritten. Do not run v0.4 against a v0.5 journal: restore with v0.5 before downgrading. Do not delete a recovery file while its session exists.
 
-Restore is retryable. If activation or clone deletion fails, the journal is retained. Incomplete sessions require restore before another apply. Truncated/corrupt journals cause control commands to stop without changing settings. Status prints the saved GUIDs when the journal is valid. If another tool deletes the original plan, automatic restoration cannot recreate that external deletion.
-
-Windows error 5 means access was denied by permissions, policy, or the execution environment. Do not assume activation occurred: check status and restore any retained session. The application does not request elevation automatically.
+If restoring the plan/display or deleting the clone fails, the journal remains for retry. Windows error 5 means access was denied by Windows policy, account permissions or the execution environment; a failed command does not establish that the profile became active. If another tool removes the original plan, VoltShift cannot recreate that external deletion.
 
 ## Architecture
 
-- hardware, gpu, battery, power_plan: v0.3 read-only probes.
-- capabilities: diagnostic results, with vendor GPU/fan control still explicitly unimplemented. Power-profile write support is checked during apply, never inferred from a CPU/GPU name.
-- controller: profile transactions, automatic transition decisions and rollback through an injectable backend.
-- control_win: PowrProf operations, policy probing/readback, durable versioned recovery journal, exclusive lock and console auto loop.
-- main: argument validation and presentation. No arguments defaults to read-only status.
+- hardware, gpu, battery, power_plan: read-only Windows probes.
+- capabilities: diagnostic support registry; prepared profile support is based on a valid saved session, not the GPU/CPU model.
+- policy: declarative policy registry with injectable read/write callbacks and verified targets.
+- display: internal-panel identity, driver mode approval, refresh application/readback and guarded restoration.
+- controller: injectable transactions, rollback, migration and automatic source-transition decisions.
+- control_win: PowrProf backend, atomic versioned journal, lock, status and console loop.
+- main: argument validation and presentation. Default is read-only status.
 
-Exit codes: 0 success; 1 operation/query failure; 2 invalid command/options. No third-party driver or runtime library is installed.
+Exit codes: 0 success, 1 operation/query failure, 2 invalid arguments. See [VALIDATION.md](VALIDATION.md) for tested behavior and remaining live checks.
 
-## Tests and limits
+## Microsoft references
 
-See VALIDATION.md. Standard tests perform no Windows power-setting writes. The live test deliberately changes the active plan temporarily and uses a separate recovery directory under build. If its restoration fails, it prints the original GUID and a manual powercfg restoration command; keep its printed recovery directory until recovery is complete.
-
-For functional acceptance, run live-test successfully, then run auto, unplug/reconnect the charger and use status from a second terminal to verify the active profiles. Stop auto with Ctrl+C and verify restoration.
-
-For later comparison with Windows Energy Saver, first restore and use a consistent workload, brightness, starting charge and network conditions. Compare measured discharge across repeated runs rather than Windows' initial remaining-time estimate.
-
-## Microsoft API references
-
-- [PowerDuplicateScheme](https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerduplicatescheme)
-- [PowerWriteDCValueIndex](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerwritedcvalueindex)
-- [PowerSetActiveScheme](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powersetactivescheme)
-- [Maximum processor state](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-maxperformance)
+- [Processor maximum state](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-maxperformance)
 - [Processor boost mode](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfboostmode)
+- [Processor energy preference](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfenergypreference)
+- [Energy Saver battery threshold](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/battery-threshold)
+- [Energy Saver brightness scaling](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/brightness)
+- [Display mode change and CDS_TEST](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw)
+- [USB selective suspend](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-selective-suspend)

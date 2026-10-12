@@ -12,6 +12,7 @@ typedef struct {
     int saves, duplicates, activates, deletes, clears;
     int fail_save, fail_configure, fail_activate, fail_delete, fail_clear;
     int corrupt, incomplete_activation, fail_duplicate, fail_active;
+    int captures, effects, effect_active, fail_capture, fail_effects, fail_restore_effects;
 } Fake;
 static GUID guid(unsigned value) { GUID g = {0}; g.Data1 = value; return g; }
 static DWORD load(void *ctx, ControlState *s) {
@@ -68,9 +69,24 @@ static DWORD delete_scheme(void *ctx, const GUID *g) {
     if(!f->clone) return ERROR_FILE_NOT_FOUND;
     f->clone=0; return 0;
 }
+static DWORD capture(void *ctx, ControlState *s) {
+    Fake *f=ctx;
+    ++f->captures;
+    assert(!f->has_state && !s->ready && s->revision==5);
+    return f->fail_capture ? ERROR_GEN_FAILURE : 0;
+}
+static DWORD effects(void *ctx, const ControlState *s, int battery) {
+    Fake *f=ctx;
+    (void)s;
+    ++f->effects;
+    if (battery && f->fail_effects) return ERROR_GEN_FAILURE;
+    if (!battery && f->fail_restore_effects) return ERROR_ACCESS_DENIED;
+    f->effect_active=battery;
+    return 0;
+}
 static ControlBackend setup(Fake *f) {
     memset(f,0,sizeof(*f)); f->current=guid(1);
-    return (ControlBackend){f,load,save,clear,active,new_guid,duplicate,configure,activate,delete_scheme};
+    return (ControlBackend){f,load,save,clear,active,new_guid,duplicate,configure,activate,delete_scheme,capture,effects};
 }
 int main(void) {
     Fake f;
@@ -81,6 +97,18 @@ int main(void) {
     assert(!control_apply(&b,0) && f.current.Data1==1 && f.has_state);
     assert(!control_apply(&b,1) && f.current.Data1==2 && f.duplicates==1);
     assert(!control_restore(&b) && f.current.Data1==1 && !f.has_state && !f.clone);
+    assert(!control_restore(&b));
+
+    b=setup(&f); f.fail_capture=1;
+    assert(control_apply(&b,1)==ERROR_GEN_FAILURE && !f.has_state && !f.duplicates);
+    b=setup(&f); f.fail_effects=1;
+    assert(control_apply(&b,1)==ERROR_GEN_FAILURE && f.current.Data1==1 && !f.has_state && !f.clone);
+    b=setup(&f); assert(!control_apply(&b,1)); f.fail_restore_effects=1;
+    assert(control_restore(&b)==ERROR_ACCESS_DENIED && f.current.Data1==1 && f.has_state && f.clone);
+    f.fail_restore_effects=0; assert(!control_restore(&b) && !f.effect_active);
+    b=setup(&f); f.has_state=1; f.saved.original=guid(1); f.saved.battery=guid(2);
+    f.saved.ready=1; f.saved.revision=4; f.clone=1; f.configured=1; f.current=guid(2);
+    assert(!control_apply(&b,1) && f.saved.revision==5 && f.current.Data1==2 && f.captures==1);
     assert(!control_restore(&b));
 
     b=setup(&f); f.fail_save=1;

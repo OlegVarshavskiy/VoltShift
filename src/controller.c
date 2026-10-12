@@ -33,6 +33,10 @@ DWORD control_restore(ControlBackend *b) {
     if (result) return result; /* Never overwrite an unreadable recovery file. */
     result = activate_checked(b, &state.original);
     if (result) return result; /* Keep recovery state until restoration succeeds. */
+    if (b->effects) {
+        result = b->effects(b->context, &state, 0);
+        if (result) return result;
+    }
     result = b->delete_scheme(b->context, &state.battery);
     if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) return result;
     return b->clear(b->context);
@@ -41,14 +45,25 @@ DWORD control_restore(ControlBackend *b) {
 DWORD control_apply(ControlBackend *b, int battery) {
     ControlState state;
     DWORD result = b->load(b->context, &state);
+    if (!result && state.ready && state.revision < 5 && battery) {
+        /* Restore the v0.4 baseline before constructing the new policy. */
+        result = control_restore(b);
+        if (result) return result;
+        result = ERROR_FILE_NOT_FOUND;
+    }
     if (result == ERROR_FILE_NOT_FOUND) {
         if (!battery) return ERROR_SUCCESS; /* Normal performance already active. */
         memset(&state, 0, sizeof(state));
+        state.revision = 5;
         result = b->active(b->context, &state.original);
         if (result) return result;
         result = b->new_guid(b->context, &state.battery);
         if (result) return result;
         if (control_same_guid(&state.original, &state.battery)) return ERROR_INVALID_DATA;
+        if (b->capture) {
+            result = b->capture(b->context, &state);
+            if (result) return result;
+        }
         /* Journal both GUIDs before creating or changing a scheme. */
         result = b->save(b->context, &state);
         if (result) return result;
@@ -70,6 +85,7 @@ DWORD control_apply(ControlBackend *b, int battery) {
     } else if (result) return result;
     if (!state.ready) return ERROR_RECOVERY_FAILURE;
     result = activate_checked(b, battery ? &state.battery : &state.original);
+    if (!result && b->effects) result = b->effects(b->context, &state, battery);
     if (result) {
         DWORD cleanup = control_restore(b);
         return cleanup ? cleanup : result;

@@ -1,11 +1,14 @@
 #ifndef VOLTSHIFT_CONTROLLER_H
 #define VOLTSHIFT_CONTROLLER_H
 #include <windows.h>
+#include "display.h"
 
 typedef struct {
     GUID original;
     GUID battery;
     DWORD ready;
+    DWORD revision;
+    DisplayState displays;
 } ControlState;
 
 /* The transaction logic is independent of WinAPI/file operations for fault tests. */
@@ -20,6 +23,8 @@ typedef struct {
     DWORD (*configure)(void *, const GUID *);
     DWORD (*activate)(void *, const GUID *);
     DWORD (*delete_scheme)(void *, const GUID *);
+    DWORD (*capture)(void *, ControlState *);
+    DWORD (*effects)(void *, const ControlState *, int battery);
 } ControlBackend;
 
 int control_same_guid(const GUID *a, const GUID *b);

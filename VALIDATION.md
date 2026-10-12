@@ -1,21 +1,41 @@
-# v0.4 validation — 11 October 2026
+# VoltShift v0.5 validation
 
-Source: current local EnergySaver/VoltShift v0.3 (4ac1b80). Changes are in a separate workspace copy. Your original checkout has not been edited, committed or pushed by this task.
+## Completed in the development environment
 
-Passed:
-- Native MSYS2 UCRT64 GCC 16.2.0 compilation with C11, -Wall -Wextra -Wpedantic -Werror -O2.
-- All existing 65,536 battery flag/percentage combinations and diagnostic boundary tests.
-- Controller tests: save before any power write, repeated apply without clone proliferation, performance/original switching, preparation failure rollback, failed activation/readback, failed journal save, failed restoration/deletion/clear and retry, corrupt state refusal, interrupted preparation recovery, automatic AC/DC/unknown transitions.
-- Native storage tests: atomic journal round-trip, temporary-file removal, exclusive lock contention/release, truncation and same-length corruption rejection before control operations.
-- CLI status, help and battery --dry-run. Invalid commands/options return 2. Default status returns 0 on this laptop.
-- Read-only preview on your laptop: CPU minimum original AC=80 DC=5; maximum AC=100 DC=100; boost AC=2 DC=2; display timeout AC=0 DC=180. All proposed settings were readable.
+The application and all six test executables, including the opt-in live-test executable, compile as C11 with GCC/UCRT64 using -Wall -Wextra -Wpedantic -Werror -O2.
 
-Live test limitation:
-- The opt-in live test was attempted in this agent execution environment. PowerDuplicateScheme returned Windows error 5 (access denied), so clone creation/application could not be verified here.
-- Cleanup returned 0. The original Balanced scheme remained active; test recovery storage was cleared.
-- Full live apply/restore, physical charger transitions, and Ctrl+C handling in your UCRT64 terminal still need the supplied live-test/manual check.
-- The MSYS2 Bash runtime itself cannot start in this restricted agent environment; build.sh is supplied for your terminal. Its equivalent compiler commands and test executables were run natively here without PowerShell.
+Five standard test suites pass:
 
-Not claimed:
-- Measured battery-life improvement, vendor GPU/fan control, hardware enforcement of every policy, MSVC/Linux support, or behavior under corporate policies/Modern Standby on other computers.
-- Tests simulate controller failures through the backend; they do not simulate an actual power loss during disk writes.
+- Diagnostics: 65,536 battery flag/percentage combinations, AC/time/unknown/absence boundaries and capability error handling.
+- Controller: journal-before-write ordering, repeated apply, rollback, restoration retry, simulated crash recovery, failed display capture/effects, legacy v0.4 migration and unknown power-source behavior.
+- Storage: atomic journal replacement, display snapshot round-trip, exclusive locking, corrupt/truncated journal rejection, legacy v0.4 loading and lock release. Tests use isolated directories under build; they do not alter the real recovery file.
+- Policy: 11 targets, preservation of stronger existing limits, battery-only writes, optional/required settings, rejected writes and readback mismatch through a fake backend.
+- Display selection: same-resolution/depth/orientation/scan-mode requirements and 59/60 Hz boundaries. This tests selection logic, not physical display switching.
+
+Read-only preview was exercised against this laptop's original baseline through its existing v0.4 journal. The expanded CPU, brightness, Saver and PCIe policies were readable. USB selective suspend was unavailable and correctly skipped. The internal panel reported 1920x1080 at 144 Hz; Windows rejected the non-mutating 60 Hz mode test in this execution environment, so refresh was left unchanged.
+
+## Remaining live acceptance
+
+v0.4 was previously live-tested successfully by the user. That does not establish v0.5's new settings or display behavior. This development environment restricts Windows system writes; the v0.5 live integration test has been compiled but has not been run here. No claim of measured battery-life improvement or successful physical refresh/brightness change is made.
+
+In the normal UCRT64 terminal, after restoring any earlier profile:
+
+~~~bash
+bash build.sh live-test
+./build/voltshift.exe save
+./build/voltshift.exe status
+./build/voltshift.exe restore
+./build/voltshift.exe status
+~~~
+
+The opt-in live test temporarily changes the power plan and, only if approved, panel refresh. It checks activation, repeated apply, original-plan selection and refresh readback/restoration for recorded displays. It always attempts rollback. Run it without unplugging displays or changing their modes mid-test. If a display mode is unsupported, it is skipped; a passing test does not mean that skipped feature was applied.
+
+Confirm the original plan returns, and if a refresh change was accepted, that its original refresh returns. Check actual Windows Saver On/Off separately: a stored threshold of 100 is not proof of activation. Plan brightness readback is not a physical brightness measurement. Verify brightness and normal app responsiveness by use.
+
+For auto, inspect status in a second terminal while unplugging/reconnecting AC. Ctrl+C should restore the original plan and recorded refresh. A forced termination requires explicit restore. Keep recovery state until restoration succeeds.
+
+## Performance and energy claims
+
+CPU limits, EPP, display refresh and driver idle policies request savings. They do not measure CPU temperature, fan speed, battery watts or actual GPU idle state. No vendor fan/GPU backend is implemented. Cooling and thermal limits are untouched by the code.
+
+Runtime gains remain unmeasured. Use repeated comparable discharge runs and record workload, elapsed time, start/end charge, brightness, refresh and actual Saver status. Compare useful work completed as well as drain: a longer compilation can offset some instantaneous power savings.

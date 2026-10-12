@@ -8,50 +8,57 @@
 #include <string.h>
 #include <wchar.h>
 #include "control_win.h"
+#include "policy.h"
 
-static const GUID processor = {0x54533251,0x82be,0x4824,{0x96,0xc1,0x47,0xb6,0x0b,0x74,0x0d,0x00}};
-static const GUID video = {0x7516b95f,0xf776,0x4464,{0x8c,0x53,0x06,0x16,0x7f,0x40,0xcc,0x99}};
-static const GUID minimum = {0x893dee8e,0x2bef,0x41e0,{0x89,0xc6,0xb5,0x5d,0x09,0x29,0x96,0x4c}};
-static const GUID maximum = {0xbc5038f7,0x23e0,0x4960,{0x96,0xda,0x33,0xab,0xaf,0x59,0x35,0xec}};
-static const GUID boost = {0xbe337238,0x0d82,0x4146,{0xa9,0x60,0x4f,0x37,0x49,0xd4,0x70,0xc7}};
-static const GUID display_idle = {0x3c0bc021,0xc8a8,0x4e07,{0xa9,0x73,0x6b,0x14,0xcb,0xcb,0x2b,0x7e}};
-typedef struct { const char *name; const GUID *group, *setting; DWORD value; int required; } Policy;
-static const Policy policies[] = {
-    {"CPU minimum state (%)", &processor, &minimum, 5, 1},
-    {"CPU maximum state (%)", &processor, &maximum, 70, 1},
-    {"CPU boost mode (0=disabled)", &processor, &boost, 0, 0},
-    {"Display idle timeout (seconds)", &video, &display_idle, 120, 0}
-};
-
-/* Fixed, versioned binary journal; checksum detects truncation/corruption. */
+/* v0.5 journals include display state; v0.4 recovery files remain readable. */
 typedef struct { char magic[8]; ControlState state; uint32_t checksum; } Journal;
-static uint32_t journal_checksum(const Journal *j) {
-    const unsigned char *bytes = (const unsigned char *)j;
+typedef struct { GUID original, battery; DWORD ready; } LegacyState;
+typedef struct { char magic[8]; LegacyState state; uint32_t checksum; } LegacyJournal;
+static uint32_t bytes_checksum(const void *data, size_t size) {
+    const unsigned char *bytes = data;
     uint32_t hash = UINT32_C(2166136261);
-    size_t i;
-    for (i = 0; i < offsetof(Journal, checksum); ++i) hash = (hash ^ bytes[i]) * UINT32_C(16777619);
+    for (size_t i = 0; i < size; ++i) hash = (hash ^ bytes[i]) * UINT32_C(16777619);
     return hash;
 }
+static uint32_t journal_checksum(const Journal *j) { return bytes_checksum(j, offsetof(Journal, checksum)); }
 static DWORD win_load(void *context, ControlState *state) {
     WinControl *c = context;
-    Journal journal;
     DWORD size, count, result = ERROR_SUCCESS;
     GUID zero = {0};
     HANDLE file = CreateFileW(c->state_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return GetLastError();
     size = GetFileSize(file, NULL);
-    if (size != sizeof(journal)) result = ERROR_INVALID_DATA;
-    else if (!ReadFile(file, &journal, sizeof(journal), &count, NULL)) result = GetLastError();
-    else if (count != sizeof(journal)) result = ERROR_INVALID_DATA;
+    memset(state, 0, sizeof(*state));
+    if (size == sizeof(LegacyJournal)) {
+        LegacyJournal legacy;
+        if (!ReadFile(file, &legacy, sizeof(legacy), &count, NULL)) result = GetLastError();
+        else if (count != sizeof(legacy) || memcmp(legacy.magic,"VOLTSH4",8) ||
+                 legacy.checksum != bytes_checksum(&legacy,offsetof(LegacyJournal,checksum))) result = ERROR_INVALID_DATA;
+        else {
+            state->original = legacy.state.original; state->battery = legacy.state.battery;
+            state->ready = legacy.state.ready; state->revision = 4;
+        }
+    } else if (size == sizeof(Journal)) {
+        Journal journal;
+        if (!ReadFile(file, &journal, sizeof(journal), &count, NULL)) result = GetLastError();
+        else if (count != sizeof(journal) || memcmp(journal.magic,"VOLTSH5",8) ||
+                 journal.checksum != journal_checksum(&journal)) result = ERROR_INVALID_DATA;
+        else *state = journal.state;
+    } else result = ERROR_INVALID_DATA;
     CloseHandle(file);
     if (result) return result;
-    if (memcmp(journal.magic, "VOLTSH4", 8) || journal.checksum != journal_checksum(&journal) ||
-        journal.state.ready > 1 || control_same_guid(&journal.state.original, &zero) ||
-        control_same_guid(&journal.state.battery, &zero) ||
-        control_same_guid(&journal.state.original, &journal.state.battery)) return ERROR_INVALID_DATA;
-    *state = journal.state;
-    return ERROR_SUCCESS;
+    if (state->ready > 1 || state->revision < 4 || state->revision > 5 ||
+        state->displays.count > DISPLAY_SNAPSHOT_LIMIT ||
+        control_same_guid(&state->original, &zero) || control_same_guid(&state->battery, &zero) ||
+        control_same_guid(&state->original, &state->battery)) return ERROR_INVALID_DATA;
+    for (DWORD i = 0; i < state->displays.count; ++i) {
+        DisplaySnapshot *s = &state->displays.items[i];
+        if (!s->source[0] || s->source[31] || !s->monitor[0] || s->monitor[127] ||
+            s->original_hz <= 60 || s->battery_hz < 59 || s->battery_hz > 60 || !s->width || !s->height)
+            return ERROR_INVALID_DATA;
+    }
+    return 0;
 }
 static DWORD win_save(void *context, const ControlState *state) {
     WinControl *c = context;
@@ -59,7 +66,7 @@ static DWORD win_save(void *context, const ControlState *state) {
     DWORD count, result = ERROR_SUCCESS;
     HANDLE file;
     memset(&journal, 0, sizeof(journal));
-    memcpy(journal.magic, "VOLTSH4", 8);
+    memcpy(journal.magic, "VOLTSH5", 8);
     journal.state = *state;
     journal.checksum = journal_checksum(&journal);
     file = CreateFileW(c->temp_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
@@ -100,46 +107,29 @@ static DWORD win_duplicate(void *context, const GUID *source, const GUID *dest) 
     if (result) fprintf(stderr, "Cannot create the private battery plan (Windows error %lu). Original plan unchanged.\n", result);
     return result;
 }
-static DWORD read_index(const GUID *scheme, const Policy *policy, int ac, DWORD *value) {
+static DWORD read_index(void *context, const GUID *scheme, const Policy *policy, int ac, DWORD *value) {
+    (void)context;
     return ac ? PowerReadACValueIndex(NULL, scheme, policy->group, policy->setting, value)
               : PowerReadDCValueIndex(NULL, scheme, policy->group, policy->setting, value);
 }
-static DWORD write_index(const GUID *scheme, const Policy *policy, int ac, DWORD value) {
+static DWORD write_index(void *context, const GUID *scheme, const Policy *policy, int ac, DWORD value) {
+    (void)context;
     return ac ? PowerWriteACValueIndex(NULL, scheme, policy->group, policy->setting, value)
               : PowerWriteDCValueIndex(NULL, scheme, policy->group, policy->setting, value);
 }
 static DWORD win_configure(void *context, const GUID *scheme) {
     const WCHAR name[] = L"VoltShift Battery";
-    size_t i;
-    DWORD result;
+    DWORD result = PowerWriteFriendlyName(NULL, scheme, NULL, NULL, (UCHAR *)name, sizeof(name));
+    PolicyBackend backend = {context, read_index, write_index, 1};
+    return result ? result : policy_configure(scheme, &backend);
+}
+static DWORD win_capture(void *context, ControlState *state) {
     (void)context;
-    result = PowerWriteFriendlyName(NULL, scheme, NULL, NULL, (UCHAR *)name, sizeof(name));
-    if (result) return result;
-    for (i = 0; i < sizeof(policies)/sizeof(policies[0]); ++i) {
-        const Policy *p = &policies[i];
-        DWORD old[2], actual;
-        int ac;
-        /* Probe both sources before writing this policy. */
-        result = read_index(scheme, p, 0, &old[0]);
-        if (!result) result = read_index(scheme, p, 1, &old[1]);
-        if (result) {
-            printf("  %s: unavailable (Windows error %lu)\n", p->name, result);
-            if (p->required) return result;
-            continue;
-        }
-        for (ac = 0; ac <= 1; ++ac) {
-            result = write_index(scheme, p, ac, p->value);
-            if (!result) result = read_index(scheme, p, ac, &actual);
-            if (!result && actual != p->value) result = ERROR_WRITE_FAULT;
-            if (result) {
-                /* Fail the transaction rather than leave an unverified partial policy. */
-                fprintf(stderr, "  %s write/readback failed (Windows error %lu).\n", p->name, result);
-                return result;
-            }
-        }
-        printf("  %s: %lu (AC and battery values verified)\n", p->name, p->value);
-    }
-    return ERROR_SUCCESS;
+    return display_capture(&state->displays);
+}
+static DWORD win_effects(void *context, const ControlState *state, int battery) {
+    (void)context;
+    return display_apply(&state->displays, battery);
 }
 static DWORD win_activate(void *context, const GUID *guid) {
     DWORD result;
@@ -168,7 +158,7 @@ DWORD control_win_init(WinControl *c, const WCHAR *directory) {
     swprintf(c->state_path, 32768, L"%ls\\session-v1.bin", c->directory);
     swprintf(c->temp_path, 32768, L"%ls\\session-v1.tmp", c->directory);
     c->backend = (ControlBackend){c, win_load, win_save, win_clear, win_active,
-        win_guid, win_duplicate, win_configure, win_activate, win_delete};
+        win_guid, win_duplicate, win_configure, win_activate, win_delete, win_capture, win_effects};
     return ERROR_SUCCESS;
 }
 DWORD control_win_lock(WinControl *c) {
@@ -187,23 +177,26 @@ void control_win_close(WinControl *c) {
 DWORD control_win_preview(WinControl *c) {
     GUID active;
     ControlState state;
-    DWORD result = win_load(c, &state);
-    DWORD required_error = ERROR_SUCCESS;
-    size_t i;
+    DisplayState displays;
+    DWORD result = win_load(c, &state), required_error = ERROR_SUCCESS;
+    size_t count;
+    const Policy *policies = policy_list(&count);
     if (!result) active = state.original;
     else if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) result = win_active(c, &active);
-    if (result) { printf("Cannot inspect baseline (Windows error %lu).\n", result); return result; }
-    puts("Battery profile preview: separate clone; original plan unchanged.");
-    for (i = 0; i < sizeof(policies)/sizeof(policies[0]); ++i) {
-        DWORD ac, dc, error = read_index(&active, &policies[i], 1, &ac);
-        if (!error) error = read_index(&active, &policies[i], 0, &dc);
+    if (result) { printf("Cannot inspect baseline (%lu).\n", result); return result; }
+    puts("Save profile preview: clone only; original plan and cooling policy unchanged.");
+    for (size_t i = 0; i < count; ++i) {
+        DWORD ac = 0, dc, error = read_index(c, &active, &policies[i], 0, &dc);
+        if (!error && !policies[i].dc_only) error = read_index(c, &active, &policies[i], 1, &ac);
         if (error) {
-            printf("  %s: unavailable (Windows error %lu)\n", policies[i].name, error);
+            printf("  %s: unavailable (%lu); %s.\n", policies[i].name, error, policies[i].required ? "required" : "skipped");
             if (policies[i].required) required_error = error;
-        }
-        else printf("  %s: original AC=%lu DC=%lu -> battery profile %lu\n", policies[i].name, ac, dc, policies[i].value);
+        } else if (policies[i].dc_only)
+            printf("  %s: DC %lu -> %lu (AC inherited).\n", policies[i].name, dc, policy_target(&policies[i],dc));
+        else printf("  %s: AC %lu -> %lu, DC %lu -> %lu.\n", policies[i].name, ac, policy_target(&policies[i],ac),dc,policy_target(&policies[i],dc));
     }
-    puts("Readability is confirmed; write permission is checked only during apply.");
+    display_capture(&displays);
+    puts("This is a read-only preview. Actual writes and runtime state are verified during apply/status.");
     return required_error;
 }
 void control_win_status(WinControl *c) {
@@ -222,6 +215,18 @@ void control_win_status(WinControl *c) {
         if (StringFromGUID2(&state.battery, guid, 40)) printf("Private battery scheme GUID: %ls\n", guid);
         puts("Recovery journal: %LOCALAPPDATA%\\VoltShift\\session-v1.bin");
     }
+    if (!win_active(c, &active)) {
+        size_t count;
+        const Policy *policies = policy_list(&count);
+        puts("Current active plan policy values (requests; not physical sensor readings):");
+        for (size_t i = 0; i < count; ++i) {
+            DWORD value, read_error = read_index(c, &active, &policies[i], 0, &value);
+            if (!read_error) printf("  %s: DC=%lu\n",policies[i].name,value);
+            else printf("  %s: unavailable (%lu)\n",policies[i].name,read_error);
+        }
+    }
+    display_report();
+    puts("Cooling/thermal protection: unchanged by VoltShift.");
 }
 
 static volatile LONG stop_requested;

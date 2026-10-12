@@ -12,7 +12,7 @@
 static const char *boolean_name(int value) {
     return value < 0 ? "Unknown" : value ? "Yes" : "No";
 }
-static int report_status(void) {
+static int report_status(WinControl *control) {
     CPUInfo cpu;
     GPUList gpu;
     BatteryInfo battery;
@@ -23,7 +23,7 @@ static int report_status(void) {
     int gpu_ok = gpu_detect(&gpu);
     int battery_ok = battery_read(&battery);
     int plan_ok = power_plan_read(&plan);
-    puts("=== VoltShift v0.4 ===");
+    puts("=== VoltShift v0.5 ===");
     if (cpu_ok) printf("CPU: %s\n", cpu.name);
     else puts("CPU identification unavailable.");
     printf("Logical processors (current processor group): %u\n", cpu.logical_processors);
@@ -51,6 +51,13 @@ static int report_status(void) {
         else printf("Power scheme name unavailable (Windows error %lu).\n", plan.name_error);
     } else printf("Active power scheme unavailable (Windows error %lu).\n", plan.error);
     capabilities_collect(cpu_ok, &gpu, &battery, &plan, caps);
+    {
+        ControlState saved;
+        if (!control->backend.load(control, &saved) && saved.ready) {
+            caps[11].state = CAP_SUPPORTED;
+            caps[11].reason = "Saved profile was prepared with verified Windows writes";
+        }
+    }
     puts("Capability registry (this runtime snapshot):");
     for (i = 0; i < CAPABILITY_COUNT; ++i)
         printf("  %-28s %-16s %s\n", caps[i].name, capability_state_name(caps[i].state), caps[i].reason);
@@ -60,11 +67,12 @@ static int report_status(void) {
 }
 
 static void usage(void) {
-    puts("VoltShift v0.4 - Windows power profiles");
-    puts("Usage: voltshift [status|battery|performance|auto|restore|help]");
+    puts("VoltShift v0.5 - Windows power profiles");
+    puts("Usage: voltshift [save|status|battery|performance|auto|restore|help]");
+    puts("       voltshift save --dry-run");
     puts("       voltshift battery --dry-run");
     puts("status: read-only diagnostics and session state (also the default)");
-    puts("battery: cloned plan; CPU min 5%, max 70%; boost off and display idle 120s where available");
+    puts("save/battery: battery-first profile; CPU cap 60%, boost off, efficiency and display/device savings");
     puts("performance: return to your original plan; no overclocking or forced high-performance plan");
     puts("auto: foreground AC/battery switching; Ctrl+C restores the original plan");
     puts("restore: restore original plan and remove VoltShift's private clone/session");
@@ -73,6 +81,7 @@ int main(int argc, char **argv) {
     WinControl control;
     DWORD result;
     const char *command = argc > 1 ? argv[1] : "status";
+    if (!strcmp(command, "save")) command = "battery";
     int dry_run = argc == 3 && strcmp(argv[2], "--dry-run") == 0;
     if (!strcmp(command, "help") || !strcmp(command, "--help") || !strcmp(command, "-h")) {
         usage(); return argc == 2 ? 0 : 2;
@@ -85,7 +94,7 @@ int main(int argc, char **argv) {
     result = control_win_init(&control, NULL);
     if (result) { fprintf(stderr, "Cannot locate recovery storage (Windows error %lu).\n", result); return 1; }
     if (!strcmp(command, "status")) {
-        int status = report_status();
+        int status = report_status(&control);
         control_win_status(&control);
         return status;
     }
@@ -103,7 +112,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Command failed (Windows error %lu). Run 'voltshift restore' to recover any saved session.\n", result);
         return 1;
     }
-    if (!strcmp(command, "battery")) puts("Battery profile active. Run 'voltshift restore' to undo.");
+    if (!strcmp(command, "battery")) {
+        SYSTEM_POWER_STATUS raw;
+        puts("Save profile active. Cooling protections are unchanged. Run 'voltshift restore' to undo.");
+        if (GetSystemPowerStatus(&raw)) {
+            printf("Windows Energy Saver actual status: %s\n", raw.SystemStatusFlag == 1 ? "On" : raw.SystemStatusFlag == 0 ? "Off" : "Unknown");
+            if (raw.ACLineStatus == 0 && raw.SystemStatusFlag == 0)
+                puts("Energy Saver threshold was requested; Windows has not reported Saver on. Do not assume it is active.");
+        }
+    }
     else if (!strcmp(command, "performance")) puts("Original performance plan active. Recovery session retained if present.");
     else if (!strcmp(command, "restore")) puts("Original plan restored; VoltShift session cleared (or no session existed).");
     return 0;
